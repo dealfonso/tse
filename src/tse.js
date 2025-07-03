@@ -43,13 +43,20 @@ const defaultConfig = {
     templateDelimiter: /\${([^}]*)}/g,  // Regular expression to detect template literals
     evalContext: window,  // Context for evaluating expressions
     observeMutations: true,  // Whether to observe DOM mutations
-    debounceTime: 50  // Debounce time to avoid multiple evaluations
+    debounceTime: 10  // Reduced debounce time for faster processing
 };
 
 let config = { ...defaultConfig };
 
 // Reference to the current observer
 let currentObserver = null;
+
+// Original DOM manipulation methods that we'll override
+const originalMethods = {
+    textContent: Object.getOwnPropertyDescriptor(Node.prototype, 'textContent'),
+    innerHTML: Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML'),
+    setAttribute: Element.prototype.setAttribute
+};
 
 /**
  * Evaluates an expression in the provided context.
@@ -72,6 +79,24 @@ function evaluateExpression(expression, context) {
         console.error(`Error evaluating expression "${expression}":`, error);
         return `[Error: ${error.message}]`;
     }
+}
+
+/**
+ * Evaluates a string containing template expressions.
+ * @param {string} text - Text that might contain template expressions
+ * @returns {string} The evaluated text
+ */
+function evaluateText(text) {
+    if (typeof text !== 'string' || !config.templateDelimiter.test(text)) return text;
+    
+    // Reset regex state
+    config.templateDelimiter.lastIndex = 0;
+    
+    // Replace all occurrences of template literals
+    return text.replace(config.templateDelimiter, (match, expression) => {
+        const value = evaluateExpression(expression);
+        return value !== undefined ? value : match;
+    });
 }
 
 /**
@@ -191,6 +216,51 @@ function setupMutationObserver() {
 }
 
 /**
+ * Override native DOM methods to instantly evaluate template strings
+ */
+function overrideNativeMethods() {
+    // Override textContent setter
+    Object.defineProperty(Node.prototype, 'textContent', {
+        get: originalMethods.textContent.get,
+        set: function(value) {
+            // Evaluate any template expressions in the string before setting
+            const evaluatedValue = evaluateText(value);
+            return originalMethods.textContent.set.call(this, evaluatedValue);
+        },
+        configurable: true
+    });
+    
+    // Override innerHTML setter
+    Object.defineProperty(Element.prototype, 'innerHTML', {
+        get: originalMethods.innerHTML.get,
+        set: function(value) {
+            // Evaluate any template expressions in the string before setting
+            const evaluatedValue = evaluateText(value);
+            return originalMethods.innerHTML.set.call(this, evaluatedValue);
+        },
+        configurable: true
+    });
+    
+    // Override setAttribute method
+    Element.prototype.setAttribute = function(name, value) {
+        // Evaluate any template expressions in attribute values
+        if (typeof value === 'string') {
+            value = evaluateText(value);
+        }
+        return originalMethods.setAttribute.call(this, name, value);
+    };
+}
+
+/**
+ * Restore original DOM methods
+ */
+function restoreNativeMethods() {
+    Object.defineProperty(Node.prototype, 'textContent', originalMethods.textContent);
+    Object.defineProperty(Element.prototype, 'innerHTML', originalMethods.innerHTML);
+    Element.prototype.setAttribute = originalMethods.setAttribute;
+}
+
+/**
  * Public API of the library.
  */
 window.DOMTemplateStringEvaluator = {
@@ -238,6 +308,9 @@ window.DOMTemplateStringEvaluator = {
             });
         }
         
+        // Set up DOM method overrides for instant evaluation
+        overrideNativeMethods();
+        
         return this;
     },
     
@@ -269,6 +342,33 @@ window.DOMTemplateStringEvaluator = {
     },
     
     /**
+     * Evaluates a string that may contain template expressions.
+     * @param {string} text - The text to evaluate
+     * @returns {string} The evaluated text
+     */
+    evaluateText: function(text) {
+        return evaluateText(text);
+    },
+    
+    /**
+     * Sets element content with immediate template evaluation.
+     * @param {Element} element - The element to modify
+     * @param {string} content - Content that may contain template expressions
+     * @param {string} method - 'text' for textContent, 'html' for innerHTML
+     */
+    setContent: function(element, content, method = 'text') {
+        const evaluatedContent = this.evaluateText(content);
+        
+        if (method === 'html') {
+            element.innerHTML = evaluatedContent;
+        } else {
+            element.textContent = evaluatedContent;
+        }
+        
+        return this;
+    },
+    
+    /**
      * Gets the current configuration.
      * @returns {Object} The current configuration
      */
@@ -282,9 +382,25 @@ window.DOMTemplateStringEvaluator = {
      */
     getVersion: function() {
         return version;
+    },
+    
+    /**
+     * Destroy the library instance and restore original DOM methods.
+     */
+    destroy: function() {
+        if (currentObserver) {
+            currentObserver.disconnect();
+            currentObserver = null;
+        }
+        restoreNativeMethods();
     }
 };
 
-document.addEventListener("DOMContentLoaded", function() {
+// Initialize as soon as possible
+if (document.readyState !== 'loading') {
     DOMTemplateStringEvaluator.init();
-});
+} else {
+    document.addEventListener("DOMContentLoaded", function() {
+        DOMTemplateStringEvaluator.init();
+    });
+}

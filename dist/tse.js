@@ -34,12 +34,17 @@
 		templateDelimiter: /\${([^}]*)}/g,
 		evalContext: window,
 		observeMutations: true,
-		debounceTime: 50
+		debounceTime: 10
 	};
 	let config = {
 		...defaultConfig
 	};
 	let currentObserver = null;
+	const originalMethods = {
+		textContent: Object.getOwnPropertyDescriptor(Node.prototype, "textContent"),
+		innerHTML: Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML"),
+		setAttribute: Element.prototype.setAttribute
+	};
 
 	function evaluateExpression(expression, context) {
 		try {
@@ -53,6 +58,15 @@
 			console.error(`Error evaluating expression "${expression}":`, error);
 			return `[Error: ${error.message}]`;
 		}
+	}
+
+	function evaluateText(text) {
+		if (typeof text !== "string" || !config.templateDelimiter.test(text)) return text;
+		config.templateDelimiter.lastIndex = 0;
+		return text.replace(config.templateDelimiter, (match, expression) => {
+			const value = evaluateExpression(expression);
+			return value !== undefined ? value : match;
+		});
 	}
 
 	function processTextNode(textNode) {
@@ -127,6 +141,37 @@
 		currentObserver = observer;
 		return observer;
 	}
+
+	function overrideNativeMethods() {
+		Object.defineProperty(Node.prototype, "textContent", {
+			get: originalMethods.textContent.get,
+			set: function (value) {
+				const evaluatedValue = evaluateText(value);
+				return originalMethods.textContent.set.call(this, evaluatedValue);
+			},
+			configurable: true
+		});
+		Object.defineProperty(Element.prototype, "innerHTML", {
+			get: originalMethods.innerHTML.get,
+			set: function (value) {
+				const evaluatedValue = evaluateText(value);
+				return originalMethods.innerHTML.set.call(this, evaluatedValue);
+			},
+			configurable: true
+		});
+		Element.prototype.setAttribute = function (name, value) {
+			if (typeof value === "string") {
+				value = evaluateText(value);
+			}
+			return originalMethods.setAttribute.call(this, name, value);
+		};
+	}
+
+	function restoreNativeMethods() {
+		Object.defineProperty(Node.prototype, "textContent", originalMethods.textContent);
+		Object.defineProperty(Element.prototype, "innerHTML", originalMethods.innerHTML);
+		Element.prototype.setAttribute = originalMethods.setAttribute;
+	}
 	window.DOMTemplateStringEvaluator = {
 		init: function (customConfig = {}) {
 			const previousConfig = {
@@ -159,6 +204,7 @@
 					setupObserverIfNeeded();
 				});
 			}
+			overrideNativeMethods();
 			return this;
 		},
 		scan: function (rootNode = document.body) {
@@ -172,6 +218,18 @@
 		evaluate: function (expression) {
 			return evaluateExpression(expression, config.evalContext);
 		},
+		evaluateText: function (text) {
+			return evaluateText(text);
+		},
+		setContent: function (element, content, method = "text") {
+			const evaluatedContent = this.evaluateText(content);
+			if (method === "html") {
+				element.innerHTML = evaluatedContent;
+			} else {
+				element.textContent = evaluatedContent;
+			}
+			return this;
+		},
 		getConfig: function () {
 			return {
 				...config
@@ -179,9 +237,20 @@
 		},
 		getVersion: function () {
 			return version;
+		},
+		destroy: function () {
+			if (currentObserver) {
+				currentObserver.disconnect();
+				currentObserver = null;
+			}
+			restoreNativeMethods();
 		}
 	};
-	document.addEventListener("DOMContentLoaded", function () {
+	if (document.readyState !== "loading") {
 		DOMTemplateStringEvaluator.init();
-	});
+	} else {
+		document.addEventListener("DOMContentLoaded", function () {
+			DOMTemplateStringEvaluator.init();
+		});
+	}
 })(window);
