@@ -32,18 +32,19 @@ if (typeof window === 'undefined') {
     throw new Error("This script must be executed in a browser environment.");
 }
 
-const version = "1.0.0";  // Version of the library
+const version = "1.0.1";  // Version of the library
 
 // Global context for evaluating expressions
 const globalContext = {};
 
 // Default configuration
 const defaultConfig = {
-    attributePrefix: 'data-bind-',  // Prefix for binding attributes
+    attributePrefix: 'data-tse-bind-',  // Prefix for binding attributes
     templateDelimiter: /\${([^}]*)}/g,  // Regular expression to detect template literals
     evalContext: window,  // Context for evaluating expressions
     observeMutations: true,  // Whether to observe DOM mutations
-    debounceTime: 10  // Reduced debounce time for faster processing
+    debounceTime: 10,  // Reduced debounce time for faster processing
+    disableAttribute: 'data-tse-disable'  // Attribute to disable evaluation
 };
 
 let config = { ...defaultConfig };
@@ -57,6 +58,38 @@ const originalMethods = {
     innerHTML: Object.getOwnPropertyDescriptor(Element.prototype, 'innerHTML'),
     setAttribute: Element.prototype.setAttribute
 };
+
+/**
+ * Checks if an element or any of its ancestors has the disable attribute.
+ * @param {Node} node - The node to check
+ * @returns {boolean} True if the node should be skipped for evaluation
+ */
+function isNodeDisabled(node) {
+    // Skip non-element nodes
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+        // For text nodes, check their parent
+        if (node.nodeType === Node.TEXT_NODE && node.parentElement) {
+            return isNodeDisabled(node.parentElement);
+        }
+        return false;
+    }
+    
+    // Check if the element itself has the disable attribute
+    if (node.hasAttribute(config.disableAttribute)) {
+        return true;
+    }
+    
+    // Check parent elements recursively
+    let parent = node.parentElement;
+    while (parent) {
+        if (parent.hasAttribute(config.disableAttribute)) {
+            return true;
+        }
+        parent = parent.parentElement;
+    }
+    
+    return false;
+}
 
 /**
  * Evaluates an expression in the provided context.
@@ -104,6 +137,9 @@ function evaluateText(text) {
  * @param {Node} textNode - The text node to process
  */
 function processTextNode(textNode) {
+    // Skip disabled nodes
+    if (isNodeDisabled(textNode)) return;
+    
     const originalContent = textNode.nodeValue;
     if (!config.templateDelimiter.test(originalContent)) return;
     
@@ -126,7 +162,10 @@ function processTextNode(textNode) {
  * @param {Element} element - The element to process
  */
 function processElement(element) {
-    // Process attributes with data-bind-
+    // Skip disabled elements
+    if (isNodeDisabled(element)) return;
+    
+    // Process attributes with data-tse-bind-
     Array.from(element.attributes).forEach(attr => {
         if (attr.name.startsWith(config.attributePrefix)) {
             const propertyName = attr.name.substring(config.attributePrefix.length);
@@ -141,10 +180,23 @@ function processElement(element) {
  * @param {Node} rootNode - The root node to start from
  */
 function scanDOM(rootNode = document.body) {
+    // Skip if root node is disabled
+    if (rootNode.nodeType === Node.ELEMENT_NODE && isNodeDisabled(rootNode)) {
+        return;
+    }
+    
     const walker = document.createTreeWalker(
         rootNode,
         NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT,
-        null,
+        {
+            acceptNode: function(node) {
+                // Skip disabled nodes and their descendants
+                if (node.nodeType === Node.ELEMENT_NODE && isNodeDisabled(node)) {
+                    return NodeFilter.FILTER_REJECT; // Skip this node and all children
+                }
+                return NodeFilter.FILTER_ACCEPT;
+            }
+        },
         false
     );
     
@@ -167,7 +219,6 @@ function setupMutationObserver() {
     
     // Disconnect the existing observer if there is one
     if (currentObserver) {
-        // console.log("Disconnecting existing observer...");
         currentObserver.disconnect();
         currentObserver = null;
     }
@@ -181,6 +232,11 @@ function setupMutationObserver() {
             mutations.forEach(mutation => {
                 // Process added nodes
                 mutation.addedNodes.forEach(node => {
+                    // Skip disabled nodes and their descendants
+                    if (node.nodeType === Node.ELEMENT_NODE && isNodeDisabled(node)) {
+                        return;
+                    }
+                    
                     if (node.nodeType === Node.TEXT_NODE) {
                         processTextNode(node);
                     } else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -191,12 +247,24 @@ function setupMutationObserver() {
                 
                 // Process attribute changes
                 if (mutation.type === 'attributes') {
-                    processElement(mutation.target);
+                    // If disable attribute was added or removed, rescan the element
+                    if (mutation.attributeName === config.disableAttribute) {
+                        // If disable was removed, process the element
+                        if (!mutation.target.hasAttribute(config.disableAttribute)) {
+                            processElement(mutation.target);
+                            scanDOM(mutation.target);
+                        }
+                    } else if (!isNodeDisabled(mutation.target)) {
+                        // Only process if not disabled
+                        processElement(mutation.target);
+                    }
                 }
                 
                 // Process text changes
                 if (mutation.type === 'characterData') {
-                    processTextNode(mutation.target);
+                    if (!isNodeDisabled(mutation.target)) {
+                        processTextNode(mutation.target);
+                    }
                 }
             });
         }, config.debounceTime);
@@ -223,6 +291,11 @@ function overrideNativeMethods() {
     Object.defineProperty(Node.prototype, 'textContent', {
         get: originalMethods.textContent.get,
         set: function(value) {
+            // Skip evaluation for disabled elements
+            if (this.nodeType === Node.ELEMENT_NODE && isNodeDisabled(this)) {
+                return originalMethods.textContent.set.call(this, value);
+            }
+            
             // Evaluate any template expressions in the string before setting
             const evaluatedValue = evaluateText(value);
             return originalMethods.textContent.set.call(this, evaluatedValue);
@@ -234,6 +307,11 @@ function overrideNativeMethods() {
     Object.defineProperty(Element.prototype, 'innerHTML', {
         get: originalMethods.innerHTML.get,
         set: function(value) {
+            // Skip evaluation for disabled elements
+            if (isNodeDisabled(this)) {
+                return originalMethods.innerHTML.set.call(this, value);
+            }
+            
             // Evaluate any template expressions in the string before setting
             const evaluatedValue = evaluateText(value);
             return originalMethods.innerHTML.set.call(this, evaluatedValue);
@@ -243,6 +321,11 @@ function overrideNativeMethods() {
     
     // Override setAttribute method
     Element.prototype.setAttribute = function(name, value) {
+        // Skip evaluation for disabled elements (except for the disable attribute itself)
+        if (isNodeDisabled(this) && name !== config.disableAttribute) {
+            return originalMethods.setAttribute.call(this, name, value);
+        }
+        
         // Evaluate any template expressions in attribute values
         if (typeof value === 'string') {
             value = evaluateText(value);
@@ -393,6 +476,39 @@ window.DOMTemplateStringEvaluator = {
             currentObserver = null;
         }
         restoreNativeMethods();
+    },
+    
+    /**
+     * Checks if an element is disabled for template evaluation.
+     * @param {Element} element - The element to check
+     * @returns {boolean} True if the element is disabled
+     */
+    isDisabled: function(element) {
+        return isNodeDisabled(element);
+    },
+    
+    /**
+     * Enables template evaluation for an element by removing the disable attribute.
+     * @param {Element} element - The element to enable
+     */
+    enable: function(element) {
+        if (element && element.nodeType === Node.ELEMENT_NODE) {
+            element.removeAttribute(config.disableAttribute);
+            // Process the now-enabled element
+            scanDOM(element);
+        }
+        return this;
+    },
+    
+    /**
+     * Disables template evaluation for an element by adding the disable attribute.
+     * @param {Element} element - The element to disable
+     */
+    disable: function(element) {
+        if (element && element.nodeType === Node.ELEMENT_NODE) {
+            element.setAttribute(config.disableAttribute, '');
+        }
+        return this;
     }
 };
 

@@ -27,14 +27,15 @@
 	if (typeof window === "undefined") {
 		throw new Error("This script must be executed in a browser environment.");
 	}
-	const version = "1.0.0";
+	const version = "1.0.1";
 	const globalContext = {};
 	const defaultConfig = {
-		attributePrefix: "data-bind-",
+		attributePrefix: "data-tse-bind-",
 		templateDelimiter: /\${([^}]*)}/g,
 		evalContext: window,
 		observeMutations: true,
-		debounceTime: 10
+		debounceTime: 10,
+		disableAttribute: "data-tse-disable"
 	};
 	let config = {
 		...defaultConfig
@@ -45,6 +46,26 @@
 		innerHTML: Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML"),
 		setAttribute: Element.prototype.setAttribute
 	};
+
+	function isNodeDisabled(node) {
+		if (node.nodeType !== Node.ELEMENT_NODE) {
+			if (node.nodeType === Node.TEXT_NODE && node.parentElement) {
+				return isNodeDisabled(node.parentElement);
+			}
+			return false;
+		}
+		if (node.hasAttribute(config.disableAttribute)) {
+			return true;
+		}
+		let parent = node.parentElement;
+		while (parent) {
+			if (parent.hasAttribute(config.disableAttribute)) {
+				return true;
+			}
+			parent = parent.parentElement;
+		}
+		return false;
+	}
 
 	function evaluateExpression(expression, context) {
 		try {
@@ -70,6 +91,7 @@
 	}
 
 	function processTextNode(textNode) {
+		if (isNodeDisabled(textNode)) return;
 		const originalContent = textNode.nodeValue;
 		if (!config.templateDelimiter.test(originalContent)) return;
 		config.templateDelimiter.lastIndex = 0;
@@ -83,6 +105,7 @@
 	}
 
 	function processElement(element) {
+		if (isNodeDisabled(element)) return;
 		Array.from(element.attributes).forEach(attr => {
 			if (attr.name.startsWith(config.attributePrefix)) {
 				const propertyName = attr.name.substring(config.attributePrefix.length);
@@ -93,7 +116,17 @@
 	}
 
 	function scanDOM(rootNode = document.body) {
-		const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, null, false);
+		if (rootNode.nodeType === Node.ELEMENT_NODE && isNodeDisabled(rootNode)) {
+			return;
+		}
+		const walker = document.createTreeWalker(rootNode, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+			acceptNode: function (node) {
+				if (node.nodeType === Node.ELEMENT_NODE && isNodeDisabled(node)) {
+					return NodeFilter.FILTER_REJECT;
+				}
+				return NodeFilter.FILTER_ACCEPT;
+			}
+		}, false);
 		let node;
 		while (node = walker.nextNode()) {
 			if (node.nodeType === Node.TEXT_NODE) {
@@ -116,6 +149,9 @@
 			debounceTimer = setTimeout(() => {
 				mutations.forEach(mutation => {
 					mutation.addedNodes.forEach(node => {
+						if (node.nodeType === Node.ELEMENT_NODE && isNodeDisabled(node)) {
+							return;
+						}
 						if (node.nodeType === Node.TEXT_NODE) {
 							processTextNode(node);
 						} else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -124,10 +160,19 @@
 						}
 					});
 					if (mutation.type === "attributes") {
-						processElement(mutation.target);
+						if (mutation.attributeName === config.disableAttribute) {
+							if (!mutation.target.hasAttribute(config.disableAttribute)) {
+								processElement(mutation.target);
+								scanDOM(mutation.target);
+							}
+						} else if (!isNodeDisabled(mutation.target)) {
+							processElement(mutation.target);
+						}
 					}
 					if (mutation.type === "characterData") {
-						processTextNode(mutation.target);
+						if (!isNodeDisabled(mutation.target)) {
+							processTextNode(mutation.target);
+						}
 					}
 				});
 			}, config.debounceTime);
@@ -146,6 +191,9 @@
 		Object.defineProperty(Node.prototype, "textContent", {
 			get: originalMethods.textContent.get,
 			set: function (value) {
+				if (this.nodeType === Node.ELEMENT_NODE && isNodeDisabled(this)) {
+					return originalMethods.textContent.set.call(this, value);
+				}
 				const evaluatedValue = evaluateText(value);
 				return originalMethods.textContent.set.call(this, evaluatedValue);
 			},
@@ -154,12 +202,18 @@
 		Object.defineProperty(Element.prototype, "innerHTML", {
 			get: originalMethods.innerHTML.get,
 			set: function (value) {
+				if (isNodeDisabled(this)) {
+					return originalMethods.innerHTML.set.call(this, value);
+				}
 				const evaluatedValue = evaluateText(value);
 				return originalMethods.innerHTML.set.call(this, evaluatedValue);
 			},
 			configurable: true
 		});
 		Element.prototype.setAttribute = function (name, value) {
+			if (isNodeDisabled(this) && name !== config.disableAttribute) {
+				return originalMethods.setAttribute.call(this, name, value);
+			}
 			if (typeof value === "string") {
 				value = evaluateText(value);
 			}
@@ -244,6 +298,22 @@
 				currentObserver = null;
 			}
 			restoreNativeMethods();
+		},
+		isDisabled: function (element) {
+			return isNodeDisabled(element);
+		},
+		enable: function (element) {
+			if (element && element.nodeType === Node.ELEMENT_NODE) {
+				element.removeAttribute(config.disableAttribute);
+				scanDOM(element);
+			}
+			return this;
+		},
+		disable: function (element) {
+			if (element && element.nodeType === Node.ELEMENT_NODE) {
+				element.setAttribute(config.disableAttribute, "");
+			}
+			return this;
 		}
 	};
 	if (document.readyState !== "loading") {

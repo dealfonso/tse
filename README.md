@@ -1,15 +1,18 @@
 # DOM Template String Evaluator
 
+[![](https://data.jsdelivr.com/v1/package/gh/dealfonso/tse/badge?style=rounded)](https://www.jsdelivr.com/package/gh/dealfonso/tse) ![](https://img.shields.io/github/v/release/dealfonso/tse) ![](https://img.shields.io/github/release-date/dealfonso/tse) ![](https://img.shields.io/github/languages/code-size/dealfonso/tse) ![](https://img.shields.io/github/license/dealfonso/tse)
+
 A lightweight JavaScript library that allows using template literals (`${expression}`) directly in HTML and automatically keeps them updated. This library traverses the DOM, identifies template literals and replaces them with their evaluated values.
 
 ## Features
 
 - Evaluates template literals (`${expression}`) in DOM text and replaces them with their values
-- Binds attributes with customizable prefix (default `data-bind-`) to element properties
+- Binds attributes with customizable prefix (default `data-tse-bind-`) to element properties
 - Automatically observes DOM changes to process dynamically added nodes
 - Dual context system: access to global context (window) + custom library context
 - Includes debounce system to optimize performance
 - Fluent API that allows chaining operations
+- Selective evaluation with `data-tse-disable` attribute to exclude elements from processing
 
 ## Installation
 
@@ -42,6 +45,43 @@ The library is automatically initialized when the DOM is ready:
     </div>
 </body>
 </html>
+```
+
+See this example in action: [Live Example](https://dealfonso.github.io/tse/example.html) or at [CodePen](https://codepen.io/dealfonso/pen/RNPzwVN).
+
+## Disabling Template Evaluation
+
+You can exclude specific elements and all their children from template evaluation by adding the `data-tse-disable` attribute:
+
+```html
+<div>
+    <p>This will be evaluated: ${new Date().toLocaleDateString()}</p>
+    
+    <div data-tse-disable>
+        <p>This will NOT be evaluated: ${new Date().toLocaleDateString()}</p>
+        <input data-tse-bind-value="'This binding is ignored too'">
+    </div>
+    
+    <p>This will be evaluated again: ${new Date().toLocaleDateString()}</p>
+</div>
+```
+
+This is particularly useful when you need to display raw template code examples or when you want to temporarily disable evaluation for a section of the page.
+
+You can also programmatically enable or disable elements:
+
+```javascript
+// Disable template evaluation for an element
+const myElement = document.getElementById('my-element');
+DOMTemplateStringEvaluator.disable(myElement);
+
+// Re-enable template evaluation (and immediately process its content)
+DOMTemplateStringEvaluator.enable(myElement);
+
+// Check if an element has evaluation disabled
+if (DOMTemplateStringEvaluator.isDisabled(myElement)) {
+    console.log('Template evaluation is disabled for this element');
+}
 ```
 
 ## Context System
@@ -148,9 +188,86 @@ const customGreeting = DOMTemplateStringEvaluator.evaluate('greet("John")');
 
 This method allows you to directly evaluate expressions, using the library's combined context. It can be used to evaluate expressions that are not directly in the DOM, or for unit testing.
 
+### `DOMTemplateStringEvaluator.evaluateText(text)`
+
+Manually evaluates a string containing template expressions.
+
+```javascript
+const template = "Hello, ${user.name}!";
+const result = DOMTemplateStringEvaluator.evaluateText(template);
+```
+
+### `DOMTemplateStringEvaluator.setContent(element, content, method)`
+
+Sets element content with immediate template evaluation.
+
+```javascript
+const element = document.getElementById('greeting');
+DOMTemplateStringEvaluator.setContent(element, 'Hello, ${user.name}!');
+// Or with HTML content
+DOMTemplateStringEvaluator.setContent(element, '<strong>Hello, ${user.name}!</strong>', 'html');
+```
+
+### `DOMTemplateStringEvaluator.disable(element)`
+
+Disables template evaluation for an element and all its descendants by adding the `data-tse-disable` attribute.
+
+```javascript
+const container = document.getElementById('raw-template-container');
+DOMTemplateStringEvaluator.disable(container);
+```
+
+### `DOMTemplateStringEvaluator.enable(element)`
+
+Enables template evaluation for an element by removing the `data-tse-disable` attribute and immediately processes its content.
+
+```javascript
+const container = document.getElementById('template-container');
+DOMTemplateStringEvaluator.enable(container);
+```
+
+### `DOMTemplateStringEvaluator.isDisabled(element)`
+
+Checks if an element has template evaluation disabled.
+
+```javascript
+if (DOMTemplateStringEvaluator.isDisabled(element)) {
+    console.log('This element is not being processed');
+}
+```
+
 ### `DOMTemplateStringEvaluator.getConfig()`
 
-Gets the current configuration.
+Gets the current configuration of the library.
+
+```javascript
+// Get the complete configuration object
+const currentConfig = DOMTemplateStringEvaluator.getConfig();
+console.log(currentConfig.attributePrefix); // 'data-tse-bind-'
+console.log(currentConfig.debounceTime); // 10
+```
+
+This is useful for debugging or when you need to check the current settings before making changes.
+
+### `DOMTemplateStringEvaluator.getVersion()`
+
+Returns the current version of the library.
+
+```javascript
+const version = DOMTemplateStringEvaluator.getVersion();
+console.log(`Using TSE version: ${version}`);
+```
+
+### `DOMTemplateStringEvaluator.destroy()`
+
+Completely removes the library's functionality, disconnecting the observer and restoring original DOM methods.
+
+```javascript
+// Clean up the library when you no longer need it
+DOMTemplateStringEvaluator.destroy();
+```
+
+This is particularly useful in single page applications when you need to clean up resources before navigating away from a page, or when you need to temporarily disable the library to perform DOM operations without template evaluation.
 
 ## Techinical Details
 
